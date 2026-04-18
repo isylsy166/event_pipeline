@@ -17,5 +17,29 @@ services:
       timeout: 5s
       retries: 5
 
+  app:
+    build: .
+    container_name: event_pipeline_app
+    environment:
+      DB_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  visualizer:
+    build:
+      context: .
+      dockerfile: analysis/Dockerfile
+    container_name: event_pipeline_visualizer
+    working_dir: /app
+    volumes:
+      - ./analysis:/app/analysis
+    command: python analysis/visualize.py
+    environment:
+      DB_HOST: postgres
+    depends_on:
+      app:
+        condition: service_completed_successfully
+
 volumes:
   postgres_data:
