@@ -92,3 +92,32 @@ event_pipeline/
 ├── Dockerfile                         # Java 앱 멀티스테이지 빌드
 └── docker-compose.yml                 # postgres → app → visualizer 순 실행
 ```
+
+## 5. AWS 아키텍처 설계
+이 프로젝트를 AWS에서 운영한다면, 실제 서비스처럼 외부 클라이언트의 API 요청을 받아 이벤트를 수집하고 저장하는 구조로 확장할 수 있습니다.
+
+![Infra Architecture.jpeg](Infra%20Architecture.jpeg)
+
+### 서비스 선택과 이유
+- `VPC (Public / Private Subnet 분리)`: ALB는 외부 트래픽을 받아야 하므로 Public Subnet에 두고, Fargate와 RDS는 외부에서 직접 접근할 수 없는 Private Subnet에 격리했습니다. DB가 인터넷에 노출되지 않아 보안 측면에서 기본적인 네트워크 격리를 확보할 수 있습니다.
+- `ALB(Application Load Balancer)`: 클라이언트 요청을 받아 Fargate 컨테이너로 분산합니다. Fargate 태스크가 여러 개로 스케일 아웃되더라도 ALB가 트래픽을 고르게 나눠주고, HTTPS 종료 지점 역할도 합니다.
+- `ECS Fargate`: 이미 Dockerfile 기반으로 앱을 구성했기 때문에 컨테이너 이미지를 그대로 배포할 수 있습니다. EC2 인스턴스를 직접 관리하지 않아도 돼 운영 복잡도가 낮고, 트래픽에 따라 태스크 수를 늘리거나 줄이기도 쉽습니다.
+- `RDS for PostgreSQL`: 현재 스키마가 관계형 모델(`events` + 타입별 서브테이블, FK, CASCADE, 인덱스)에 맞춰 설계되어 있습니다. 로컬 Docker Compose의 PostgreSQL을 관리형 DB로 옮기는 구조라 설계 연속성이 자연스럽습니다.
+- `S3`: 차트 이미지처럼 한 번 생성된 결과 파일을 보관하는 용도입니다. 정형 데이터가 아니라 파일 보관소 역할이기 때문에 RDS가 아닌 객체 스토리지로 분리하는 편이 역할이 명확합니다.
+- `CloudWatch`: Fargate 태스크의 로그, 에러, 실행 현황을 한 곳에서 확인할 수 있습니다. 애플리케이션 코드 변경 없이 ECS와 자동 연동됩니다.
+- `ECR (Elastic Container Registry)`: Java 앱의 Docker 이미지를 저장하고 버전 관리하는 컨테이너 레지스트리입니다. Fargate 태스크 시작 시 ECR에서 이미지를 pull하기 때문에, 배포할 이미지를 보관할 저장소가 필요합니다. AWS 내부 네트워크에서 pull하므로 외부 레지스트리(Docker Hub 등)보다 빠르고, IAM 기반 접근 제어도 적용됩니다.
+
+### 서비스 역할 차이
+- `ALB`는 외부 트래픽의 진입점입니다. 직접 비즈니스 로직을 수행하지 않고, 요청을 Fargate 태스크로 라우팅하는 역할만 합니다.
+- `ECS Fargate`는 실제 코드가 실행되는 곳입니다. 이벤트 수집 API를 처리하고 RDS에 저장하며, 차트 생성 후 S3에 업로드합니다.
+- `ECR`은 컨테이너 이미지 저장소입니다. 애플리케이션 코드 자체가 아니라 빌드된 이미지를 보관하며, Fargate가 배포 시 참조합니다.
+- `RDS`는 구조화된 원본 이벤트 데이터의 저장소입니다. SQL 집계, JOIN, 인덱스 활용이 필요한 데이터베이스 역할을 합니다.
+- `S3`는 시각화 산출물(PNG 파일 등)을 보관하는 파일 저장소입니다. 쿼리가 필요한 데이터가 아니라 완성된 결과물을 두는 곳이라 RDS와 역할이 다릅니다.
+- `CloudWatch`는 저장소가 아닌 관찰 도구입니다. 로그, 오류, 메트릭을 추적하는 운영용 서비스입니다.
+
+### 이 아키텍처에서 가장 고민한 부분
+가장 고민한 지점은 `Fargate와 RDS를 같은 Private Subnet에 둘지, 별도 Subnet으로 분리할지`였습니다.
+
+실제 운영 환경에서는 RDS를 별도의 DB 전용 Subnet(DB Subnet Group)에 두고 Fargate에서만 접근을 허용하는 Security Group을 구성하는 방식이 더 세밀한 격리를 제공합니다. 다만 이번 설계에서는 구조의 단순함을 우선해 하나의 Private Subnet으로 묶었습니다.
+
+또 하나 고민한 부분은 `차트 시각화 결과를 RDS에 둘지, S3로 분리할지`였습니다. 차트 이미지는 SQL로 재조회가 필요한 정형 데이터가 아니라 한 번 생성된 결과 파일이기 때문에, 원본 이벤트는 `RDS`, 시각화 산출물은 `S3`로 분리하는 쪽이 역할 분리가 명확하다고 판단했습니다.
