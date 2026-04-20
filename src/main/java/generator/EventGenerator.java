@@ -4,7 +4,9 @@ import model.*;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.DayOfWeek;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
@@ -13,6 +15,8 @@ import java.util.UUID;
 public class EventGenerator {
 
     private static final Random RANDOM = new Random();
+    private static final ZoneOffset ZONE_OFFSET = ZoneOffset.ofHours(9);
+    private static final int LOOKBACK_DAYS = 7;
 
     private static final List<String> USER_IDS = List.of(
             "user_001", "user_002", "user_003", "user_004", "user_005",
@@ -64,7 +68,7 @@ public class EventGenerator {
         EventType type = pick(EVENT_TYPE_POOL);
         String userId = pick(USER_IDS);
         String sessionId = UUID.randomUUID().toString().substring(0, 8);
-        OffsetDateTime timestamp = OffsetDateTime.now();
+        OffsetDateTime timestamp = randomTimestamp(type);
         String ipAddress = randomIp();
         String userAgent = pick(USER_AGENTS);
 
@@ -97,5 +101,91 @@ public class EventGenerator {
         double amount = 1000 + RANDOM.nextDouble() * 99000;
         return BigDecimal.valueOf(amount).setScale(2, RoundingMode.HALF_UP);
     }
-}
 
+    private static OffsetDateTime randomTimestamp(EventType type) {
+        OffsetDateTime now = OffsetDateTime.now(ZONE_OFFSET);
+        int daysAgo = weightedDaysAgo();
+        OffsetDateTime baseDate = now.minusDays(daysAgo);
+
+        int hour = weightedHour(type, baseDate.getDayOfWeek());
+        int minute = RANDOM.nextInt(60);
+        int second = RANDOM.nextInt(60);
+
+        OffsetDateTime candidate = baseDate
+                .withHour(hour)
+                .withMinute(minute)
+                .withSecond(second)
+                .withNano(0);
+
+        if (candidate.isAfter(now)) {
+            return now.minusMinutes(RANDOM.nextInt(30)).withNano(0);
+        }
+        return candidate;
+    }
+
+    private static int weightedDaysAgo() {
+        int roll = RANDOM.nextInt(100);
+        if (roll < 35) {
+            return 0;
+        }
+        if (roll < 60) {
+            return 1;
+        }
+        if (roll < 75) {
+            return 2;
+        }
+        if (roll < 86) {
+            return 3;
+        }
+        if (roll < 93) {
+            return 4;
+        }
+        if (roll < 97) {
+            return 5;
+        }
+        return RANDOM.nextInt(LOOKBACK_DAYS - 5) + 5;
+    }
+
+    private static int weightedHour(EventType type, DayOfWeek dayOfWeek) {
+        int roll = RANDOM.nextInt(100);
+        boolean weekend = dayOfWeek == DayOfWeek.SATURDAY || dayOfWeek == DayOfWeek.SUNDAY;
+
+        return switch (type) {
+            case PAGE_VIEW -> {
+                if (weekend) {
+                    yield pickHour(roll, 10, 13, 15, 18, 20, 23);
+                }
+                yield pickHour(roll, 8, 11, 12, 17, 19, 22);
+            }
+            case PURCHASE -> {
+                if (weekend) {
+                    yield pickHour(roll, 11, 14, 15, 18, 19, 22);
+                }
+                yield pickHour(roll, 10, 12, 13, 18, 19, 22);
+            }
+            case ERROR -> {
+                if (weekend) {
+                    yield pickHour(roll, 9, 12, 13, 17, 18, 23);
+                }
+                yield pickHour(roll, 8, 10, 11, 17, 18, 23);
+            }
+        };
+    }
+
+    private static int pickHour(int roll, int low1, int high1, int low2, int high2, int low3, int high3) {
+        if (roll < 15) {
+            return randomBetween(0, 6);
+        }
+        if (roll < 45) {
+            return randomBetween(low1, high1);
+        }
+        if (roll < 80) {
+            return randomBetween(low2, high2);
+        }
+        return randomBetween(low3, high3);
+    }
+
+    private static int randomBetween(int startInclusive, int endInclusive) {
+        return startInclusive + RANDOM.nextInt(endInclusive - startInclusive + 1);
+    }
+}
